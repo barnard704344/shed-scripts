@@ -55,10 +55,21 @@
 #define OTA_URL_SIZE 256
 
 // ================== Flow calibration =================
-// Typical YF-S201 ≈ 7.5 Hz per L/min (i.e., ~450 pulses/L).
-// We integrate for exactly 1.0s windows, so LPM = Hz / HZ_PER_LPM_x
-static float HZ_PER_LPM_IN  = 7.50f;
-static float HZ_PER_LPM_OUT = 7.50f;
+// Jaycar ZD1202 Reed Switch Flowmeter (0.6-8.0 L/min)
+// From datasheet calibration table:
+// Flow Range: 2.0-8.0 L/min -> 0.0041 liter per pulse
+// Calculation: 1/0.0041 = 243.9 pulses per liter
+// At 1 L/min: 243.9 pulses/min = 243.9/60 = 4.065 Hz per L/min
+// 
+// For lower flow rates, use different calibration:
+// 1.5-2.0 L/min -> 0.0040 L/pulse -> 4.167 Hz per L/min
+// 1.0-1.5 L/min -> 0.0038 L/pulse -> 4.386 Hz per L/min
+// 0.8-1.0 L/min -> 0.0036 L/pulse -> 4.630 Hz per L/min
+// 0.6-0.8 L/min -> 0.0033 L/pulse -> 5.051 Hz per L/min
+//
+// Using mid-range value for 2.0-8.0 L/min (most common range):
+static float HZ_PER_LPM_IN  = 4.065f;  // ZD1202: 243.9 pulses/L (2.0-8.0 L/min range)
+static float HZ_PER_LPM_OUT = 4.065f;  // ZD1202: 243.9 pulses/L (2.0-8.0 L/min range)
 
 // ================== Control mode =====================
 // false = Setpoint mode (error = SETPOINT - OUT)
@@ -349,6 +360,8 @@ static void print_help(void) {
     printf("  d<kd>        -> Set KD\n");
     printf("  a<deg>       -> Manual servo angle (disables PID)\n");
     printf("  r            -> Re-enable PID\n");
+    printf("  cin<value>   -> Calibrate input sensor (Hz per L/min)\n");
+    printf("  cout<value>  -> Calibrate output sensor (Hz per L/min)\n");
     printf("  status       -> Show system status\n");
     printf("  ota          -> Trigger OTA update\n");
     printf("  wifi         -> Show WiFi status\n");
@@ -449,6 +462,10 @@ static void cli_task(void *arg) {
                     printf("Setpoint: %.3f L/min\n", SETPOINT_LPM);
                     printf("PID: %s\n", pidEnabled ? "ENABLED" : "DISABLED");
                     printf("PID Params: KP=%.3f, KI=%.3f, KD=%.3f\n", KP, KI, KD);
+                    printf("Flow Calibration:\n");
+                    printf("  Input: %.3f Hz/LPM (%.0f pulses/L)\n", HZ_PER_LPM_IN, HZ_PER_LPM_IN * 60.0f);
+                    printf("  Output: %.3f Hz/LPM (%.0f pulses/L)\n", HZ_PER_LPM_OUT, HZ_PER_LPM_OUT * 60.0f);
+                    printf("Temperature: Sensor1=%.1f°C, Sensor2=%.1f°C\n", temp_sensor_1.temperature_c, temp_sensor_2.temperature_c);
                     printf("==================\n\n");
                 } else if (strlen(v) > 0) {
                     // Handle setpoint command s<value>
@@ -474,6 +491,30 @@ static void cli_task(void *arg) {
                     } else {
                         printf("WiFi not connected\n");
                     }
+                }
+                break;
+
+            case 'c': // calibration commands
+                if (strncmp(line, "cin", 3) == 0) {
+                    float val = strtof(line + 3, NULL);
+                    if (isfinite(val) && val > 0.0f) {
+                        HZ_PER_LPM_IN = val;
+                        printf("Input calibration set to %.4f Hz per L/min\n", HZ_PER_LPM_IN);
+                        printf("This equals %.1f pulses per liter\n", HZ_PER_LPM_IN * 60.0f);
+                    } else {
+                        printf("Invalid value. Usage: cin<value> (e.g., cin0.2667)\n");
+                    }
+                } else if (strncmp(line, "cout", 4) == 0) {
+                    float val = strtof(line + 4, NULL);
+                    if (isfinite(val) && val > 0.0f) {
+                        HZ_PER_LPM_OUT = val;
+                        printf("Output calibration set to %.4f Hz per L/min\n", HZ_PER_LPM_OUT);
+                        printf("This equals %.1f pulses per liter\n", HZ_PER_LPM_OUT * 60.0f);
+                    } else {
+                        printf("Invalid value. Usage: cout<value> (e.g., cout0.2667)\n");
+                    }
+                } else {
+                    printf("Unknown calibration command. Use 'cin<value>' or 'cout<value>'\n");
                 }
                 break;
 

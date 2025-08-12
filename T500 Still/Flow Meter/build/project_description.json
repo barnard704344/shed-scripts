@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "t500_dual_flow_servo",
-    "project_version":    "8c4f901-dirty",
+    "project_version":    "39c7252-dirty",
     "project_path":       "/home/rob/Documents/Github/shed-scripts/T500 Still/Flow Meter",
     "idf_path":           "/home/rob/esp-idf",
     "build_dir":          "/home/rob/Documents/Github/shed-scripts/T500 Still/Flow Meter/build",
