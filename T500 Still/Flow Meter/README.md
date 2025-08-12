@@ -4,12 +4,13 @@
 ![Build](https://img.shields.io/badge/build-passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-A sophisticated ESP32-based flow control system for T500 distillation columns featuring PID control, temperature monitoring, web dashboard, and OTA updates.
+A sophisticated ESP32-based flow control system for T500 distillation columns featuring dual flow meter pressure regulation, PID control, temperature monitoring, web dashboard, and OTA updates.
 
 ## 🚀 Features
 
 ### Core Functionality
-- **Dual Flow Monitoring**: Precision flow measurement with Jaycar ZD1202 flowmeters
+- **Dual Flow Monitoring**: Precision flow measurement with Jaycar ZD1202 flowmeters for input and output
+- **Variable Pressure Regulation**: Three intelligent control modes for handling variable house water pressure
 - **PID Control**: Servo-controlled valve with adaptive PID algorithm
 - **Temperature Monitoring**: Dual temperature sensors with multiple sensor type support
 - **Web Dashboard**: Real-time HTML interface with live data visualization
@@ -17,8 +18,10 @@ A sophisticated ESP32-based flow control system for T500 distillation columns fe
 - **Serial Interface**: Comprehensive CLI for configuration and monitoring
 
 ### Advanced Features
-- **Multiple Control Modes**: Setpoint control and flow equalization
+- **Multiple Control Modes**: Setpoint, equalize, and auto pressure-compensation modes
+- **Pressure Compensation**: Automatic adjustment for varying input pressure conditions
 - **Runtime Calibration**: Adjust sensor calibration without reflashing
+- **Flow Efficiency Monitoring**: Real-time flow ratio and efficiency calculations
 - **Sensor Flexibility**: Support for thermistors, DS18B20, thermocouples, and RTDs
 - **Professional Web UI**: Responsive design with auto-refresh and manual controls
 - **JSON API**: RESTful endpoints for integration with external systems
@@ -53,8 +56,8 @@ A sophisticated ESP32-based flow control system for T500 distillation columns fe
 
 | Component | ESP32 Pin | Function | Notes |
 |-----------|-----------|----------|-------|
-| Flow Sensor (Input) | GPIO 4 | Pulse input | Reed switch, 10kΩ pullup |
-| Flow Sensor (Output) | GPIO 5 | Pulse input | Reed switch, 10kΩ pullup |
+| Flow Sensor (Input) | GPIO 34 | Pulse input | Reed switch, 10kΩ pullup |
+| Flow Sensor (Output) | GPIO 35 | Pulse input | Reed switch, 10kΩ pullup |
 | Servo Control | GPIO 18 | PWM output | 1000-2000μs pulse width |
 | Temperature Sensor 1 | GPIO 34 | ADC input | Thermistor with 10kΩ ref |
 | Temperature Sensor 2 | GPIO 35 | ADC input | Thermistor with 10kΩ ref |
@@ -63,7 +66,16 @@ A sophisticated ESP32-based flow control system for T500 distillation columns fe
 ```
 ESP32                    ZD1202 Flow Sensor
                         ┌─────────────────┐
-GPIO 4  ──10kΩ──3.3V ───┤ Signal          │
+GPIO 34 ──10kΩ──3.3V ───┤ Signal          │
+                        │                 │
+5V      ─────────────────┤ VCC    Flow     │
+                        │        ────>    │
+GND     ─────────────────┤ GND             │
+                        └─────────────────┘
+
+ESP32                    ZD1202 Flow Sensor (Output)
+                        ┌─────────────────┐
+GPIO 35 ──10kΩ──3.3V ───┤ Signal          │
                         │                 │
 5V      ─────────────────┤ VCC    Flow     │
                         │        ────>    │
@@ -130,9 +142,10 @@ idf.py -p /dev/ttyUSB0 flash monitor
 ## 🌐 Web Dashboard
 
 ### Features
-- **Real-time Data**: Flow rates, temperatures, servo position
+- **Real-time Data**: Flow rates, flow efficiency, temperatures, servo position
 - **Visual Indicators**: Color-coded status for all sensors
-- **Interactive Controls**: Mode switching, setpoint adjustment
+- **Interactive Controls**: Mode switching, setpoint adjustment, ratio configuration
+- **Pressure Monitoring**: Input/output flow ratio and efficiency display
 - **Auto-refresh**: Updates every 2 seconds
 - **Responsive Design**: Works on desktop and mobile
 
@@ -158,9 +171,11 @@ Returns complete system status in JSON format.
   "uptime": 3600,
   "flow_in": 2.45,
   "flow_out": 2.43,
+  "flow_ratio": 0.99,
   "servo_angle": 45.5,
-  "mode": "SETPOINT",
+  "mode": "AUTO",
   "setpoint": 2.50,
+  "effective_setpoint": 2.08,
   "pid_enabled": true,
   "temp1_c": 78.5,
   "temp1_f": 173.3,
@@ -217,9 +232,27 @@ The system supports multiple flowmeter types with runtime calibration:
 #### Flow Control
 ```bash
 m0              # Setpoint mode (control output to match setpoint)
-m1              # Equalize mode (match output to input)
+m1              # Equalize mode (match output to input) - Best for variable pressure
+m2              # Auto mode (pressure-compensated intelligent control)
 s2.5            # Set setpoint to 2.5 L/min
+ratio0.85       # Set auto mode efficiency target (85%)
 ```
+
+#### Pressure Regulation Modes
+
+**Mode 0 - SETPOINT**: Fixed output flow rate control
+- Use when you want consistent output regardless of input variations
+- Best for stable house pressure conditions
+
+**Mode 1 - EQUALIZE**: Direct pressure regulation (**Recommended for variable pressure**)
+- Automatically compensates for pressure fluctuations
+- Maintains consistent flow ratios
+- Perfect for varying house water pressure
+
+**Mode 2 - AUTO**: Intelligent pressure-compensated control
+- Dynamically adjusts target based on available input flow
+- Maximizes efficiency while respecting limits
+- Advanced optimization for complex pressure conditions
 
 #### PID Tuning
 ```bash
@@ -240,6 +273,44 @@ status          # Show current calibration values
 ```bash
 a45             # Set servo to 45 degrees (disables PID)
 r               # Re-enable automatic PID control
+```
+
+#### System Status and Monitoring
+```bash
+status          # Show comprehensive system status including flow ratios
+wifi            # Show WiFi connection details
+ota             # Trigger OTA firmware update
+h               # Show complete command help
+```
+
+### Recommended Settings for Variable House Pressure
+
+For best performance with varying water pressure, use **Equalize Mode**:
+
+```bash
+# Set to equalize mode (recommended)
+m1
+
+# Monitor performance
+status
+
+# Fine-tune if needed
+p0.8            # Adjust PID parameters if response is too slow/fast
+i0.05
+d0.02
+```
+
+For advanced users, try **Auto Mode** with efficiency optimization:
+
+```bash
+# Set to auto mode
+m2
+
+# Set efficiency target (85% default)
+ratio0.85
+
+# Monitor effective setpoint adjustment
+status
 ```
 
 ### Temperature Sensor Configuration
@@ -338,8 +409,8 @@ I (1234) T500: Booting T500 dual flow control with OTA support
 I (1250) T500: WiFi connected to: YourNetwork
 I (1260) T500: HTTP server started on port 80
 I (1270) T500: Temperature monitoring initialized
-I (1280) T500: Flow IN: 2.45 L/min, OUT: 2.43 L/min
-I (1290) T500: Servo: 45.5°, Mode: SETPOINT, PID: ENABLED
+I (1280) T500: Flow IN: 2.45 L/min, OUT: 2.43 L/min, RATIO: 0.99 (99%)
+I (1290) T500: Servo: 45.5°, Mode: EQUALIZE, PID: ENABLED
 ```
 
 ### Build Issues

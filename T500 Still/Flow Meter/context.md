@@ -1,7 +1,7 @@
 # T500 Flow Meter ESP32 Project Context
 
 ## Project Overview
-ESP32-based dual flow sensor control system for T500 distillation column with PID-controlled servo valve, temperature monitoring, and web dashboard interface.
+ESP32-based dual flow sensor control system for T500 distillation column with intelligent pressure regulation, PID-controlled servo valve, temperature monitoring, and web dashboard interface. Features three control modes specifically designed for handling variable house water pressure.
 
 ## Project Structure
 ```
@@ -55,11 +55,11 @@ idf.py flash monitor
 ## Hardware Configuration
 
 ### Pin Assignments
-- **Flow Sensor In**: GPIO 4 (before valve/coil) - YF-S201 or ZD1202
-- **Flow Sensor Out**: GPIO 5 (after valve/coil) - YF-S201 or ZD1202
+- **Flow Sensor In**: GPIO 34 (before valve/coil) - ZD1202 reed switch flowmeter
+- **Flow Sensor Out**: GPIO 35 (after valve/coil) - ZD1202 reed switch flowmeter
 - **Servo Control**: GPIO 18 (PWM signal to servo)
-- **Temperature Sensor 1**: GPIO 34 (ADC1_CH6) - Thermistor/DS18B20/Thermocouple
-- **Temperature Sensor 2**: GPIO 35 (ADC1_CH7) - Thermistor/DS18B20/Thermocouple
+- **Temperature Sensor 1**: GPIO 34 (ADC1_CH6) - Thermistor/DS18B20/Thermocouple (shared with flow sensor)
+- **Temperature Sensor 2**: GPIO 35 (ADC1_CH7) - Thermistor/DS18B20/Thermocouple (shared with flow sensor)
 
 ### Flow Sensors
 
@@ -93,8 +93,30 @@ idf.py flash monitor
 ## Control System
 
 ### Operating Modes
-1. **Setpoint Mode** (default): error = setpoint - OUT_flow
-2. **Equalize Mode**: error = OUT_flow - IN_flow
+
+The system now features three intelligent control modes designed for varying house water pressure:
+
+#### Mode 0: SETPOINT Mode
+- **Operation**: `error = setpoint - OUT_flow`
+- **Purpose**: Fixed output flow rate control
+- **Best for**: Stable house pressure conditions
+- **Use case**: When you want consistent output regardless of input variations
+
+#### Mode 1: EQUALIZE Mode (Recommended for Variable Pressure)
+- **Operation**: `error = OUT_flow - IN_flow`
+- **Purpose**: Direct pressure regulation
+- **Best for**: Variable house water pressure conditions
+- **Benefits**: Automatically compensates for pressure fluctuations, maintains consistent flow ratios
+
+#### Mode 2: AUTO Mode (Advanced Pressure Compensation)
+- **Operation**: `effective_setpoint = input_flow × efficiency_ratio`
+- **Purpose**: Intelligent pressure-compensated control
+- **Features**:
+  - Dynamic setpoint adjustment based on available input flow
+  - Configurable efficiency target (default 85%)
+  - Falls back to setpoint mode when input flow is insufficient
+  - Never exceeds base setpoint for safety
+- **Best for**: Complex pressure conditions requiring optimization
 
 ### PID Parameters (default)
 - KP = 0.80
@@ -104,20 +126,30 @@ idf.py flash monitor
 - Max servo step: 5°/second
 
 ### CLI Commands (via serial monitor)
-- `m0` - Setpoint mode
-- `m1` - Equalize mode
+
+#### Control Mode Commands
+- `m0` - Setpoint mode (fixed output control)
+- `m1` - Equalize mode (recommended for variable pressure)
+- `m2` - Auto mode (intelligent pressure compensation)
 - `s<value>` - Set flow setpoint (L/min), e.g., `s3.2`
-- `status` - Show detailed system status including temperature
+- `ratio<value>` - Set auto mode efficiency target (e.g., `ratio0.85` for 85%)
+
+#### System Monitoring
+- `status` - Show detailed system status including flow ratios and efficiency
+- `wifi` - Show WiFi connection status
+- `ota` - Trigger OTA firmware update
+- `h` - Help (show all commands)
+
+#### PID Control
 - `p<kp>` - Set proportional gain
 - `i<ki>` - Set integral gain
 - `d<kd>` - Set derivative gain
 - `a<deg>` - Manual servo angle (disables PID)
 - `r` - Re-enable PID
+
+#### Sensor Calibration
 - `cin<value>` - Calibrate input flow sensor (Hz per L/min)
 - `cout<value>` - Calibrate output flow sensor (Hz per L/min)
-- `ota` - Trigger OTA firmware update
-- `wifi` - Show WiFi connection status
-- `h` - Help
 
 ### Flow Sensor Calibration
 Different flowmeters require different calibration values:
@@ -163,27 +195,32 @@ python3 -m http.server 8070
 
 ### Real-time Display
 - **System Status**: Connection, firmware version, uptime, memory usage
-- **Flow Monitoring**: Live input/output flow rates with color-coded display
+- **Flow Monitoring**: Live input/output flow rates with efficiency calculations
+- **Flow Efficiency**: Real-time flow ratio and percentage efficiency display
 - **Temperature Monitoring**: Real-time temperature from dual sensors (°C and °F)
 - **Servo Position**: Visual indicator showing current servo angle (10°-170°)
-- **Control Mode**: Current operating mode (Setpoint/Equalize)
+- **Control Mode**: Current operating mode (Setpoint/Equalize/Auto)
 - **PID Status**: Whether PID control is enabled/disabled
 - **Sensor Status**: Visual indicators for temperature sensor validity
+- **Pressure Compensation**: Effective setpoint display in Auto mode
 
 ### Interactive Controls
-- **Mode Switching**: Buttons for Setpoint/Equalize modes
+- **Mode Switching**: Buttons for Setpoint/Equalize/Auto modes
 - **Setpoint Adjustment**: Input field for setting target flow rate
+- **Efficiency Control**: Auto mode ratio adjustment interface
 - **Auto-refresh**: Toggle automatic data updates (every 2 seconds)
 - **Manual Refresh**: On-demand data refresh button
 - **OTA Updates**: One-click firmware update button
 
 ### JSON API Endpoints
 - `GET /status` - Complete system data including:
-  - Flow rates (input/output)
+  - Flow rates (input/output) with efficiency calculations
+  - Flow ratio and percentage efficiency
+  - Control mode (Setpoint/Equalize/Auto) with effective setpoint
   - Temperature readings (both sensors, °C/°F, validity status)
-  - Servo position and control mode
-  - PID parameters and status
+  - Servo position and PID control status
   - System health (memory, uptime, WiFi)
+  - Auto mode parameters (ratio, effective setpoint)
 
 ### Access Instructions
 1. Flash firmware and connect to WiFi
@@ -199,13 +236,32 @@ python3 -m http.server 8070
 - Components: esp_adc (for temperature), esp_http_server, esp_wifi, esp_https_ota
 
 ## Recent Changes
+- **Pressure Regulation**: Added three intelligent control modes for variable house water pressure
+- **Auto Mode**: Pressure-compensated control with configurable efficiency targets
+- **Flow Efficiency Monitoring**: Real-time flow ratio calculations and efficiency display
+- **Enhanced CLI**: Added mode switching (m0/m1/m2) and ratio configuration commands
+- **Improved Status Display**: Comprehensive system status with flow ratios and effective setpoints
 - **Temperature Monitoring**: Added dual temperature sensor support (GPIO 34/35)
 - **ZD1202 Calibration**: Updated for Jaycar ZD1202 flowmeters with datasheet values
 - **Runtime Calibration**: Added serial commands for flowmeter calibration adjustment
 - **Enhanced Web Dashboard**: Added temperature display with real-time updates
-- **JSON API**: Extended status endpoint with temperature data
+- **JSON API**: Extended status endpoint with temperature and efficiency data
 - **Sensor Support**: Configurable sensor types (thermistor/DS18B20/thermocouple/RTD)
 - **ADC Integration**: 12-bit ADC with Steinhart-Hart temperature calculations
+
+## Pressure Regulation Features
+
+### Recommended Usage for Variable House Pressure
+1. **Start with Equalize Mode**: `m1` - Best for most variable pressure situations
+2. **Monitor Performance**: Use `status` command to check flow ratios
+3. **Fine-tune if needed**: Adjust PID parameters for optimal response
+4. **Advanced Users**: Try Auto Mode (`m2`) with custom efficiency ratios
+
+### Benefits of Dual Flow Meter Setup
+- **Real-time Pressure Monitoring**: Input vs output flow comparison
+- **Automatic Compensation**: System adapts to pressure variations
+- **Efficiency Optimization**: Maximizes output while respecting limits
+- **Safety Protection**: Prevents system damage from pressure fluctuations
 
 ## Git Repository
 - Repository: `shed-scripts`

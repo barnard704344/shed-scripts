@@ -10,9 +10,22 @@
 
 static const char *TAG = "TEMPERATURE";
 
-// Global temperature readings
-temp_reading_t temp_sensor_1 = {0};
-temp_reading_t temp_sensor_2 = {0};
+// Global temperature readings with T500 location descriptions
+temp_reading_t temp_sensor_1 = {
+    .temperature_c = 0.0f,
+    .temperature_f = 32.0f,
+    .valid = false,
+    .last_update_ms = 0,
+    .location = "T500 Water Outlet (Point A)"
+};
+
+temp_reading_t temp_sensor_2 = {
+    .temperature_c = 0.0f,
+    .temperature_f = 32.0f,
+    .valid = false,
+    .last_update_ms = 0,
+    .location = "T500 Cooling Water Inlet (Point B)"
+};
 
 // ADC handles (will be initialized based on sensor type)
 static adc_oneshot_unit_handle_t adc1_handle = NULL;
@@ -38,17 +51,17 @@ esp_err_t temperature_init(void)
         .atten = ADC_ATTEN_DB_12,  // 0-3.1V range
     };
     
-    // Configure sensor 1
-    ret = adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_4, &config);  // GPIO32
+    // Configure sensor 1 - T500 Water Outlet Temperature (Point A)
+    ret = adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_6, &config);  // GPIO34
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure sensor 1 channel: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to configure T500 water outlet temp sensor (Point A): %s", esp_err_to_name(ret));
         return ret;
     }
     
-    // Configure sensor 2
-    ret = adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_5, &config);  // GPIO33
+    // Configure sensor 2 - T500 Cooling Water Inlet (Point B)
+    ret = adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_7, &config);  // GPIO35
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure sensor 2 channel: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to configure T500 cooling water inlet sensor (Point B): %s", esp_err_to_name(ret));
         return ret;
     }
     
@@ -73,10 +86,10 @@ esp_err_t temperature_read_sensor_1(void)
         return ESP_ERR_INVALID_STATE;
     }
     
-    // Placeholder implementation - replace with actual sensor reading
-    // This example shows thermistor reading
+    // Read T500 Water Outlet Temperature (Point A)
+    // This is the primary control sensor for T500 temperature-based flow control
     float temperature = 0.0f;
-    esp_err_t ret = read_thermistor(ADC_CHANNEL_4, &temperature);
+    esp_err_t ret = read_thermistor(ADC_CHANNEL_6, &temperature);  // GPIO34
     
     if (ret == ESP_OK) {
         temp_sensor_1.temperature_c = temperature;
@@ -96,10 +109,11 @@ esp_err_t temperature_read_sensor_2(void)
         return ESP_ERR_INVALID_STATE;
     }
     
-    // Placeholder implementation - replace with actual sensor reading
-    // This example shows thermistor reading
+    // Read T500 Cooling Water Inlet Temperature (Point B)
+    // Read T500 Cooling Water Inlet Temperature (Point B)
+    // This is a reference sensor for monitoring inlet water temperature
     float temperature = 0.0f;
-    esp_err_t ret = read_thermistor(ADC_CHANNEL_5, &temperature);
+    esp_err_t ret = read_thermistor(ADC_CHANNEL_7, &temperature);  // GPIO35
     
     if (ret == ESP_OK) {
         temp_sensor_2.temperature_c = temperature;

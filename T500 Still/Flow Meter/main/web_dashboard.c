@@ -10,6 +10,12 @@
 esp_err_t status_handler(httpd_req_t *req)
 {
     char resp_str[768];  // Increased buffer size for temperature data
+    
+    // Get mode string
+    const char* mode_str = (CONTROL_MODE == MODE_SETPOINT) ? "SETPOINT" : 
+                          (CONTROL_MODE == MODE_EQUALIZE) ? "EQUALIZE" : 
+                          (CONTROL_MODE == MODE_AUTO) ? "AUTO" : "T500_TEMP";
+    
     snprintf(resp_str, sizeof(resp_str),
         "{"
         "\"firmware_version\":\"%s\","
@@ -34,7 +40,7 @@ esp_err_t status_handler(httpd_req_t *req)
         lpm_in,
         lpm_out,
         servoAngleDeg,
-        MODE_EQUALIZE ? "EQUALIZE" : "SETPOINT",
+        mode_str,
         SETPOINT_LPM,
         pidEnabled ? "true" : "false",
         temp_sensor_1.temperature_c,

@@ -1,0 +1,5 @@
+{
+    "idf.espIdfPath": "/home/rob/esp-idf",
+    "idf.toolsPath": "/home/rob/.espressif",
+    "idf.pythonInstallPath": "/usr/bin/python3"
+}

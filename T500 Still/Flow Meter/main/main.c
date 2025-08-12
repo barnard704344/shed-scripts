@@ -72,9 +72,10 @@ static float HZ_PER_LPM_IN  = 4.065f;  // ZD1202: 243.9 pulses/L (2.0-8.0 L/min 
 static float HZ_PER_LPM_OUT = 4.065f;  // ZD1202: 243.9 pulses/L (2.0-8.0 L/min range)
 
 // ================== Control mode =====================
-// false = Setpoint mode (error = SETPOINT - OUT)
-// true  = Equalize mode (error = OUT - IN)
-volatile bool MODE_EQUALIZE = false; // start in Setpoint mode
+// Control modes are defined in web_dashboard.h to avoid conflicts
+volatile control_mode_t CONTROL_MODE = MODE_SETPOINT; // start in Setpoint mode
+
+// Legacy compatibility - remove the #define to avoid conflicts
 
 // ================== PID params =======================
 static float KP = 0.80f;
@@ -98,7 +99,23 @@ static float integralTerm = 0.0f;
 static float lastError    = 0.0f;
 
 // Setpoint for OUT line (L/min) in Setpoint mode
-float SETPOINT_LPM = 3.0f;
+// T500 Cooling Water Specifications:
+// - 240V units: 0.400-0.600 L/min (400-600 mL/min)
+// - 110V units: 0.104 L/min (103.5 mL/min ≈ 3.5 US fl oz/min)
+float SETPOINT_LPM = 0.6f;  // Default to T500 240V maximum for safety
+
+// Auto mode parameters for pressure compensation
+float AUTO_TARGET_RATIO = 0.85f;  // Target output/input ratio (85% efficiency)
+float MIN_INPUT_FLOW = 0.1f;      // Minimum input flow to maintain control (T500 compatible)
+float MAX_INPUT_FLOW = 8.0f;      // Maximum expected input flow
+
+// T500 Temperature-Based Flow Control
+bool T500_TEMP_CONTROL_ENABLED = false;  // Enable automatic temperature-based flow adjustment
+float T500_TEMP_THRESHOLD_HIGH = 50.0f;  // 50°C (122°F) - start water flow control
+float T500_TEMP_THRESHOLD_LOW = 45.0f;   // 45°C (113°F) - reduce water flow (hysteresis)
+float T500_TEMP_MAX_FLOW = 0.6f;         // Maximum flow at high temperatures
+float T500_TEMP_MIN_FLOW = 0.1f;         // Minimum flow to maintain circulation
+float T500_TEMP_RAMP_RATE = 0.05f;       // L/min per °C temperature change
 
 // Sampling
 static const int SAMPLE_PERIOD_MS = 1000;
@@ -320,8 +337,63 @@ static void sample_timer_cb(void *arg) {
     lpm_in  = (HZ_PER_LPM_IN  > 0.0f) ? (hz_in  / HZ_PER_LPM_IN ) : 0.0f;
     lpm_out = (HZ_PER_LPM_OUT > 0.0f) ? (hz_out / HZ_PER_LPM_OUT) : 0.0f;
 
-    // Compute error
-    float error = MODE_EQUALIZE ? (lpm_out - lpm_in) : (SETPOINT_LPM - lpm_out);
+    // Compute error based on control mode
+    float error = 0.0f;
+    float effective_setpoint = SETPOINT_LPM;
+    
+    switch (CONTROL_MODE) {
+        case MODE_SETPOINT:
+            error = SETPOINT_LPM - lpm_out;
+            break;
+            
+        case MODE_EQUALIZE:
+            error = lpm_out - lpm_in;
+            break;
+            
+        case MODE_AUTO:
+            // Pressure-compensated mode: adjust target based on input flow
+            if (lpm_in >= MIN_INPUT_FLOW) {
+                effective_setpoint = lpm_in * AUTO_TARGET_RATIO;
+                // Clamp to reasonable bounds
+                if (effective_setpoint > SETPOINT_LPM) {
+                    effective_setpoint = SETPOINT_LPM;  // Don't exceed user setpoint
+                }
+                error = effective_setpoint - lpm_out;
+            } else {
+                // Insufficient input flow - fall back to setpoint mode
+                error = SETPOINT_LPM - lpm_out;
+            }
+            break;
+            
+        case MODE_T500_TEMP:
+            // T500 temperature-based flow control
+            if (temp_sensor_1.valid) {
+                float temp_c = temp_sensor_1.temperature_c;
+                
+                if (temp_c >= T500_TEMP_THRESHOLD_HIGH) {
+                    // Above 50°C - calculate flow based on temperature
+                    float temp_factor = (temp_c - T500_TEMP_THRESHOLD_HIGH) * T500_TEMP_RAMP_RATE;
+                    effective_setpoint = T500_TEMP_MIN_FLOW + temp_factor;
+                    
+                    // Clamp to reasonable bounds
+                    if (effective_setpoint > T500_TEMP_MAX_FLOW) {
+                        effective_setpoint = T500_TEMP_MAX_FLOW;
+                    }
+                } else if (temp_c <= T500_TEMP_THRESHOLD_LOW) {
+                    // Below 45°C - minimum flow for circulation
+                    effective_setpoint = T500_TEMP_MIN_FLOW;
+                } else {
+                    // In hysteresis zone - maintain current setpoint
+                    effective_setpoint = SETPOINT_LPM;
+                }
+                
+                error = effective_setpoint - lpm_out;
+            } else {
+                // No valid temperature reading - fall back to setpoint mode
+                error = SETPOINT_LPM - lpm_out;
+            }
+            break;
+    }
 
     // Drive servo
     if (pidEnabled) {
@@ -331,10 +403,15 @@ static void sample_timer_cb(void *arg) {
     }
 
     // Telemetry
+    const char* mode_str = (CONTROL_MODE == MODE_SETPOINT) ? "SETPOINT" : 
+                          (CONTROL_MODE == MODE_EQUALIZE) ? "EQUALIZE" : 
+                          (CONTROL_MODE == MODE_AUTO) ? "AUTO" : "T500_TEMP";
+                          
     ESP_LOGI(TAG,
         "IN: %.3f L/min  OUT: %.3f L/min  MODE:%s  SP:%.3f  ERR:%.3f  ANG:%.1f  PID(Kp=%.3f,Ki=%.3f,Kd=%.3f) I=%.2f",
-        lpm_in, lpm_out, MODE_EQUALIZE ? "EQUALIZE" : "SETPOINT",
-        SETPOINT_LPM, error, servoAngleDeg, KP, KI, KD, integralTerm
+        lpm_in, lpm_out, mode_str,
+        (CONTROL_MODE == MODE_AUTO) ? effective_setpoint : SETPOINT_LPM, 
+        error, servoAngleDeg, KP, KI, KD, integralTerm
     );
 }
 
@@ -354,7 +431,15 @@ static void print_help(void) {
     printf("\nCommands:\n");
     printf("  m0           -> Setpoint mode (error = setpoint - OUT)\n");
     printf("  m1           -> Equalize mode (error = OUT - IN)\n");
-    printf("  s<value>     -> Setpoint L/min (e.g., s3.2)\n");
+    printf("  m2           -> Auto mode (pressure-compensated setpoint)\n");
+    printf("  m3           -> T500 temperature mode (temp-based flow control)\n");
+    printf("  s<value>     -> Setpoint L/min (e.g., s0.6)\n");
+    printf("  ratio<value> -> Auto mode target ratio (e.g., ratio0.85)\n");
+    printf("  t500_240v    -> Set T500 240V preset (0.6 L/min)\n");
+    printf("  t500_110v    -> Set T500 110V preset (0.104 L/min)\n");
+    printf("  t500_temp    -> Enable T500 temperature control mode\n");
+    printf("  temp_high<T> -> Set high temp threshold (°C, e.g., temp_high50)\n");
+    printf("  temp_low<T>  -> Set low temp threshold (°C, e.g., temp_low45)\n");
     printf("  p<kp>        -> Set KP\n");
     printf("  i<ki>        -> Set KI\n");
     printf("  d<kd>        -> Set KD\n");
@@ -393,15 +478,27 @@ static void cli_task(void *arg) {
         switch (c) {
             case 'm':
                 if (strcmp(v, "0") == 0) {
-                    MODE_EQUALIZE = false;
+                    CONTROL_MODE = MODE_SETPOINT;
                     integralTerm = 0.0f; lastError = 0.0f;
                     printf("Mode = SETPOINT\n");
                 } else if (strcmp(v, "1") == 0) {
-                    MODE_EQUALIZE = true;
+                    CONTROL_MODE = MODE_EQUALIZE;
                     integralTerm = 0.0f; lastError = 0.0f;
                     printf("Mode = EQUALIZE\n");
+                } else if (strcmp(v, "2") == 0) {
+                    CONTROL_MODE = MODE_AUTO;
+                    integralTerm = 0.0f; lastError = 0.0f;
+                    printf("Mode = AUTO (pressure-compensated)\n");
+                    printf("Target ratio: %.2f (%.0f%% efficiency)\n", AUTO_TARGET_RATIO, AUTO_TARGET_RATIO * 100);
+                } else if (strcmp(v, "3") == 0) {
+                    CONTROL_MODE = MODE_T500_TEMP;
+                    integralTerm = 0.0f; lastError = 0.0f;
+                    printf("Mode = T500_TEMP (temperature-based flow control)\n");
+                    printf("High threshold: %.1f°C, Low threshold: %.1f°C\n", 
+                           T500_TEMP_THRESHOLD_HIGH, T500_TEMP_THRESHOLD_LOW);
+                    printf("Flow range: %.3f-%.3f L/min\n", T500_TEMP_MIN_FLOW, T500_TEMP_MAX_FLOW);
                 } else {
-                    printf("Usage: m0 or m1\n");
+                    printf("Usage: m0 (setpoint), m1 (equalize), m2 (auto), or m3 (T500 temp)\n");
                 }
                 break;
 
@@ -432,10 +529,26 @@ static void cli_task(void *arg) {
             } break;
 
             case 'r':
-                pidEnabled   = true;
-                integralTerm = 0.0f;
-                lastError    = 0.0f;
-                printf("PID re-enabled\n");
+                if (strcmp(line, "ratio") == 0 || strncmp(line, "ratio", 5) == 0) {
+                    if (strlen(v) > 0) {
+                        float ratio = strtof(v, NULL);
+                        if (ratio > 0.0f && ratio <= 1.0f && isfinite(ratio)) {
+                            AUTO_TARGET_RATIO = ratio;
+                            printf("Auto mode target ratio set to %.3f (%.1f%% efficiency)\n", 
+                                   AUTO_TARGET_RATIO, AUTO_TARGET_RATIO * 100);
+                        } else {
+                            printf("Invalid ratio. Must be between 0.0 and 1.0\n");
+                        }
+                    } else {
+                        printf("Current ratio: %.3f (%.1f%%)\n", AUTO_TARGET_RATIO, AUTO_TARGET_RATIO * 100);
+                    }
+                } else {
+                    // Original 'r' command - re-enable PID
+                    pidEnabled   = true;
+                    integralTerm = 0.0f;
+                    lastError    = 0.0f;
+                    printf("PID re-enabled\n");
+                }
                 break;
 
             case 'h':
@@ -457,15 +570,67 @@ static void cli_task(void *arg) {
                     printf("Uptime: %lld seconds\n", esp_timer_get_time() / 1000000LL);
                     printf("Flow IN: %.3f L/min\n", lpm_in);
                     printf("Flow OUT: %.3f L/min\n", lpm_out);
+                    printf("Flow Ratio: %.2f (%.1f%%)\n", 
+                           (lpm_in > 0.01f) ? (lpm_out / lpm_in) : 0.0f,
+                           (lpm_in > 0.01f) ? (lpm_out / lpm_in * 100.0f) : 0.0f);
                     printf("Servo: %.1f degrees\n", servoAngleDeg);
-                    printf("Mode: %s\n", MODE_EQUALIZE ? "EQUALIZE" : "SETPOINT");
-                    printf("Setpoint: %.3f L/min\n", SETPOINT_LPM);
+                    
+                    const char* mode_name = (CONTROL_MODE == MODE_SETPOINT) ? "SETPOINT" : 
+                                           (CONTROL_MODE == MODE_EQUALIZE) ? "EQUALIZE" : 
+                                           (CONTROL_MODE == MODE_AUTO) ? "AUTO" : "T500_TEMP";
+                    printf("Mode: %s\n", mode_name);
+                    
+                    if (CONTROL_MODE == MODE_AUTO) {
+                        printf("Auto Target Ratio: %.3f (%.1f%% efficiency)\n", 
+                               AUTO_TARGET_RATIO, AUTO_TARGET_RATIO * 100);
+                        if (lpm_in >= MIN_INPUT_FLOW) {
+                            float effective_sp = lpm_in * AUTO_TARGET_RATIO;
+                            if (effective_sp > SETPOINT_LPM) effective_sp = SETPOINT_LPM;
+                            printf("Effective Setpoint: %.3f L/min (based on input)\n", effective_sp);
+                        }
+                    } else if (CONTROL_MODE == MODE_T500_TEMP) {
+                        printf("T500 Temperature Control:\n");
+                        printf("  High threshold: %.1f°C (%.1f°F)\n", T500_TEMP_THRESHOLD_HIGH,
+                               T500_TEMP_THRESHOLD_HIGH * 9.0f/5.0f + 32);
+                        printf("  Low threshold: %.1f°C (%.1f°F)\n", T500_TEMP_THRESHOLD_LOW,
+                               T500_TEMP_THRESHOLD_LOW * 9.0f/5.0f + 32);
+                        printf("  Flow range: %.3f-%.3f L/min\n", T500_TEMP_MIN_FLOW, T500_TEMP_MAX_FLOW);
+                        if (temp_sensor_1.valid) {
+                            printf("  Current temp: %.1f°C (%.1f°F)\n", 
+                                   temp_sensor_1.temperature_c, temp_sensor_1.temperature_f);
+                            if (temp_sensor_1.temperature_c >= T500_TEMP_THRESHOLD_HIGH) {
+                                printf("  Status: ACTIVE COOLING (temp above threshold)\n");
+                            } else if (temp_sensor_1.temperature_c <= T500_TEMP_THRESHOLD_LOW) {
+                                printf("  Status: MINIMAL FLOW (temp below threshold)\n");
+                            } else {
+                                printf("  Status: HYSTERESIS ZONE (maintaining current flow)\n");
+                            }
+                        } else {
+                            printf("  Status: NO VALID TEMPERATURE (using setpoint mode)\n");
+                        }
+                    }
+                    
+                    printf("Base Setpoint: %.3f L/min\n", SETPOINT_LPM);
                     printf("PID: %s\n", pidEnabled ? "ENABLED" : "DISABLED");
                     printf("PID Params: KP=%.3f, KI=%.3f, KD=%.3f\n", KP, KI, KD);
                     printf("Flow Calibration:\n");
                     printf("  Input: %.3f Hz/LPM (%.0f pulses/L)\n", HZ_PER_LPM_IN, HZ_PER_LPM_IN * 60.0f);
                     printf("  Output: %.3f Hz/LPM (%.0f pulses/L)\n", HZ_PER_LPM_OUT, HZ_PER_LPM_OUT * 60.0f);
                     printf("Temperature: Sensor1=%.1f°C, Sensor2=%.1f°C\n", temp_sensor_1.temperature_c, temp_sensor_2.temperature_c);
+                    
+                    // T500 compatibility check
+                    printf("\nT500 Compatibility:\n");
+                    if (lpm_out >= 0.4f && lpm_out <= 0.6f) {
+                        printf("✅ Current flow (%.3f L/min) suitable for T500 240V cooling\n", lpm_out);
+                    } else if (lpm_out >= 0.09f && lpm_out <= 0.12f) {
+                        printf("✅ Current flow (%.3f L/min) suitable for T500 110V cooling\n", lpm_out);
+                    } else if (lpm_out < 0.09f) {
+                        printf("⚠️  Current flow (%.3f L/min) below T500 minimum\n", lpm_out);
+                    } else {
+                        printf("⚠️  Current flow (%.3f L/min) above T500 maximum\n", lpm_out);
+                    }
+                    printf("T500 240V spec: 0.400-0.600 L/min (400-600 mL/min)\n");
+                    printf("T500 110V spec: 0.104 L/min (3.5 US fl oz/min)\n");
                     printf("==================\n\n");
                 } else if (strlen(v) > 0) {
                     // Handle setpoint command s<value>
@@ -515,6 +680,57 @@ static void cli_task(void *arg) {
                     }
                 } else {
                     printf("Unknown calibration command. Use 'cin<value>' or 'cout<value>'\n");
+                }
+                break;
+
+            case 't': // T500 presets and temperature commands
+                if (strcmp(line, "t500_240v") == 0) {
+                    SETPOINT_LPM = 0.6f;
+                    CONTROL_MODE = MODE_SETPOINT;
+                    integralTerm = 0.0f; lastError = 0.0f;
+                    printf("T500 240V preset: 0.6 L/min setpoint, Setpoint mode\n");
+                    printf("T500 spec: 400-600 mL/min cooling water\n");
+                } else if (strcmp(line, "t500_110v") == 0) {
+                    SETPOINT_LPM = 0.104f;
+                    CONTROL_MODE = MODE_SETPOINT;
+                    integralTerm = 0.0f; lastError = 0.0f;
+                    printf("T500 110V preset: 0.104 L/min setpoint, Setpoint mode\n");
+                    printf("T500 spec: 3.5 US fl oz/min cooling water\n");
+                    printf("WARNING: Below ZD1202 minimum range (0.6 L/min)\n");
+                    printf("Consider using different flowmeter for low flows\n");
+                } else if (strcmp(line, "t500_temp") == 0) {
+                    CONTROL_MODE = MODE_T500_TEMP;
+                    T500_TEMP_THRESHOLD_HIGH = 50.0f;  // 50°C per T500 documentation
+                    T500_TEMP_THRESHOLD_LOW = 45.0f;   // 5°C hysteresis
+                    T500_TEMP_MAX_FLOW = 0.6f;         // T500 240V maximum
+                    T500_TEMP_MIN_FLOW = 0.1f;         // Minimum circulation
+                    integralTerm = 0.0f; lastError = 0.0f;
+                    printf("T500 Temperature Control Mode activated\n");
+                    printf("High threshold: %.1f°C (%.1f°F)\n", T500_TEMP_THRESHOLD_HIGH, 
+                           T500_TEMP_THRESHOLD_HIGH * 9.0f/5.0f + 32);
+                    printf("Low threshold: %.1f°C (%.1f°F)\n", T500_TEMP_THRESHOLD_LOW,
+                           T500_TEMP_THRESHOLD_LOW * 9.0f/5.0f + 32);
+                    printf("Flow range: %.3f-%.3f L/min\n", T500_TEMP_MIN_FLOW, T500_TEMP_MAX_FLOW);
+                } else if (strncmp(line, "temp_high", 9) == 0) {
+                    float temp = strtof(line + 9, NULL);
+                    if (temp > 0.0f && temp <= 100.0f && isfinite(temp)) {
+                        T500_TEMP_THRESHOLD_HIGH = temp;
+                        printf("High temperature threshold set to %.1f°C (%.1f°F)\n", 
+                               temp, temp * 9.0f/5.0f + 32);
+                    } else {
+                        printf("Invalid temperature. Use temp_high<value> (e.g., temp_high50)\n");
+                    }
+                } else if (strncmp(line, "temp_low", 8) == 0) {
+                    float temp = strtof(line + 8, NULL);
+                    if (temp > 0.0f && temp <= 100.0f && isfinite(temp)) {
+                        T500_TEMP_THRESHOLD_LOW = temp;
+                        printf("Low temperature threshold set to %.1f°C (%.1f°F)\n", 
+                               temp, temp * 9.0f/5.0f + 32);
+                    } else {
+                        printf("Invalid temperature. Use temp_low<value> (e.g., temp_low45)\n");
+                    }
+                } else {
+                    printf("Unknown T500 command. Use 't500_240v', 't500_110v', 't500_temp', 'temp_high<T>', or 'temp_low<T>'\n");
                 }
                 break;
 
