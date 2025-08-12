@@ -1,0 +1,222 @@
+#include "web_dashboard.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_system.h"
+#include "esp_app_format.h"
+#include "temperature.h"
+#include <inttypes.h>
+#include <string.h>
+
+esp_err_t status_handler(httpd_req_t *req)
+{
+    char resp_str[768];  // Increased buffer size for temperature data
+    snprintf(resp_str, sizeof(resp_str),
+        "{"
+        "\"firmware_version\":\"%s\","
+        "\"heap_free\":%" PRIu32 ","
+        "\"uptime\":%lld,"
+        "\"flow_in\":%.3f,"
+        "\"flow_out\":%.3f,"
+        "\"servo_angle\":%.1f,"
+        "\"mode\":\"%s\","
+        "\"setpoint\":%.3f,"
+        "\"pid_enabled\":%s,"
+        "\"temp1_c\":%.2f,"
+        "\"temp1_f\":%.2f,"
+        "\"temp1_valid\":%s,"
+        "\"temp2_c\":%.2f,"
+        "\"temp2_f\":%.2f,"
+        "\"temp2_valid\":%s"
+        "}",
+        "1.0.0",
+        esp_get_free_heap_size(),
+        esp_timer_get_time() / 1000000LL,
+        lpm_in,
+        lpm_out,
+        servoAngleDeg,
+        MODE_EQUALIZE ? "EQUALIZE" : "SETPOINT",
+        SETPOINT_LPM,
+        pidEnabled ? "true" : "false",
+        temp_sensor_1.temperature_c,
+        temp_sensor_1.temperature_f,
+        temp_sensor_1.valid ? "true" : "false",
+        temp_sensor_2.temperature_c,
+        temp_sensor_2.temperature_f,
+        temp_sensor_2.valid ? "true" : "false"
+    );
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp_str, strlen(resp_str));
+    return ESP_OK;
+}
+
+esp_err_t dashboard_handler(httpd_req_t *req)
+{
+    const char* html_page = 
+    "<!DOCTYPE html>"
+    "<html><head>"
+    "<title>T500 Flow Meter Dashboard</title>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<style>"
+    "body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }"
+    ".container { max-width: 1200px; margin: 0 auto; }"
+    ".header { background: #2c3e50; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }"
+    ".card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }"
+    ".status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }"
+    ".status-item { background: #ecf0f1; padding: 15px; border-radius: 6px; text-align: center; }"
+    ".status-value { font-size: 24px; font-weight: bold; color: #2c3e50; }"
+    ".status-label { font-size: 14px; color: #7f8c8d; }"
+    ".flow-meters { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }"
+    ".flow-meter { text-align: center; }"
+    ".flow-value { font-size: 36px; font-weight: bold; }"
+    ".flow-in { color: #3498db; }"
+    ".flow-out { color: #e74c3c; }"
+    ".temp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }"
+    ".temp-sensor { text-align: center; background: #ecf0f1; padding: 15px; border-radius: 6px; }"
+    ".temp-value { font-size: 24px; font-weight: bold; color: #e67e22; }"
+    ".temp-unit { font-size: 14px; color: #7f8c8d; }"
+    ".controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; }"
+    ".control-group { background: #ecf0f1; padding: 15px; border-radius: 6px; }"
+    ".button { background: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin: 5px; }"
+    ".button:hover { background: #2980b9; }"
+    ".button.danger { background: #e74c3c; }"
+    ".button.danger:hover { background: #c0392b; }"
+    ".button.success { background: #27ae60; }"
+    ".button.success:hover { background: #229954; }"
+    ".input { padding: 8px; border: 1px solid #bdc3c7; border-radius: 4px; width: 100px; }"
+    ".servo-indicator { width: 200px; height: 20px; background: #ecf0f1; border-radius: 10px; position: relative; margin: 0 auto; }"
+    ".servo-position { height: 100%; background: #3498db; border-radius: 10px; transition: width 0.3s ease; }"
+    ".online { color: #27ae60; }"
+    ".offline { color: #e74c3c; }"
+    "</style>"
+    "<script>"
+    "let updateInterval;"
+    "function updateData() {"
+    "  fetch('/status')"
+    "    .then(response => response.json())"
+    "    .then(data => {"
+    "      document.getElementById('firmware').textContent = data.firmware_version;"
+    "      document.getElementById('uptime').textContent = formatUptime(data.uptime);"
+    "      document.getElementById('heap').textContent = formatBytes(data.heap_free);"
+    "      document.getElementById('flow-in').textContent = data.flow_in.toFixed(2);"
+    "      document.getElementById('flow-out').textContent = data.flow_out.toFixed(2);"
+    "      document.getElementById('servo-angle').textContent = data.servo_angle.toFixed(1);"
+    "      document.getElementById('mode').textContent = data.mode;"
+    "      document.getElementById('setpoint').textContent = data.setpoint.toFixed(2);"
+    "      document.getElementById('pid-status').textContent = data.pid_enabled ? 'Enabled' : 'Disabled';"
+    "      document.getElementById('temp1-c').textContent = data.temp1_c.toFixed(1);"
+    "      document.getElementById('temp1-f').textContent = data.temp1_f.toFixed(1);"
+    "      document.getElementById('temp2-c').textContent = data.temp2_c.toFixed(1);"
+    "      document.getElementById('temp2-f').textContent = data.temp2_f.toFixed(1);"
+    "      document.getElementById('temp1-status').className = data.temp1_valid ? 'online' : 'offline';"
+    "      document.getElementById('temp2-status').className = data.temp2_valid ? 'online' : 'offline';"
+    "      var servoWidth = ((data.servo_angle + 90) / 180) * 100;"
+    "      document.getElementById('servo-position').style.width = servoWidth + '%';"
+    "    })"
+    "    .catch(error => console.error('Error fetching data:', error));"
+    "}"
+    "function formatUptime(seconds) {"
+    "  const days = Math.floor(seconds / 86400);"
+    "  const hours = Math.floor((seconds % 86400) / 3600);"
+    "  const minutes = Math.floor((seconds % 3600) / 60);"
+    "  return days + 'd ' + hours + 'h ' + minutes + 'm';"
+    "}"
+    "function formatBytes(bytes) {"
+    "  return (bytes / 1024).toFixed(1) + ' KB';"
+    "}"
+    "function startAutoUpdate() {"
+    "  updateData();"
+    "  updateInterval = setInterval(updateData, 2000);"
+    "  document.getElementById('auto-update').textContent = 'Stop Auto Update';"
+    "  document.getElementById('auto-update').onclick = stopAutoUpdate;"
+    "}"
+    "function stopAutoUpdate() {"
+    "  clearInterval(updateInterval);"
+    "  document.getElementById('auto-update').textContent = 'Start Auto Update';"
+    "  document.getElementById('auto-update').onclick = startAutoUpdate;"
+    "}"
+    "window.onload = function() {"
+    "  updateData();"
+    "};"
+    "</script>"
+    "</head><body>"
+    "<div class='container'>"
+    "<div class='header'>"
+    "<h1>T500 Flow Meter Dashboard</h1>"
+    "<p>Firmware: <span id='firmware'>--</span> | Uptime: <span id='uptime'>--</span> | Free Memory: <span id='heap'>--</span></p>"
+    "</div>"
+    
+    "<div class='card'>"
+    "<h2>Flow Rates</h2>"
+    "<div class='flow-meters'>"
+    "<div class='flow-meter'>"
+    "<div class='flow-value flow-in'><span id='flow-in'>--</span> L/min</div>"
+    "<div class='status-label'>Input Flow</div>"
+    "</div>"
+    "<div class='flow-meter'>"
+    "<div class='flow-value flow-out'><span id='flow-out'>--</span> L/min</div>"
+    "<div class='status-label'>Output Flow</div>"
+    "</div>"
+    "</div>"
+    "</div>"
+    
+    "<div class='card'>"
+    "<h2>Temperature Sensors</h2>"
+    "<div class='temp-grid'>"
+    "<div class='temp-sensor'>"
+    "<div class='temp-value'><span id='temp1-c'>--</span>&deg;C</div>"
+    "<div class='temp-unit'>(<span id='temp1-f'>--</span>&deg;F)</div>"
+    "<div class='status-label'>Sensor 1 <span id='temp1-status' class='offline'>&bull;</span></div>"
+    "</div>"
+    "<div class='temp-sensor'>"
+    "<div class='temp-value'><span id='temp2-c'>--</span>&deg;C</div>"
+    "<div class='temp-unit'>(<span id='temp2-f'>--</span>&deg;F)</div>"
+    "<div class='status-label'>Sensor 2 <span id='temp2-status' class='offline'>&bull;</span></div>"
+    "</div>"
+    "</div>"
+    "</div>"
+    
+    "<div class='card'>"
+    "<h2>System Status</h2>"
+    "<div class='status-grid'>"
+    "<div class='status-item'>"
+    "<div class='status-value'><span id='servo-angle'>--</span>&deg;</div>"
+    "<div class='status-label'>Servo Angle</div>"
+    "<div class='servo-indicator'><div class='servo-position' id='servo-position'></div></div>"
+    "</div>"
+    "<div class='status-item'>"
+    "<div class='status-value'><span id='mode'>--</span></div>"
+    "<div class='status-label'>Mode</div>"
+    "</div>"
+    "<div class='status-item'>"
+    "<div class='status-value'><span id='setpoint'>--</span> L/min</div>"
+    "<div class='status-label'>Setpoint</div>"
+    "</div>"
+    "<div class='status-item'>"
+    "<div class='status-value'><span id='pid-status'>--</span></div>"
+    "<div class='status-label'>PID Control</div>"
+    "</div>"
+    "</div>"
+    "</div>"
+    
+    "<div class='card'>"
+    "<h2>Controls</h2>"
+    "<div class='controls'>"
+    "<div class='control-group'>"
+    "<h3>Auto Update</h3>"
+    "<button class='button' id='auto-update' onclick='startAutoUpdate()'>Start Auto Update</button>"
+    "</div>"
+    "<div class='control-group'>"
+    "<h3>Manual Refresh</h3>"
+    "<button class='button' onclick='updateData()'>Refresh Data</button>"
+    "</div>"
+    "</div>"
+    "</div>"
+    
+    "</div>"
+    "</body></html>";
+    
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html_page, strlen(html_page));
+    return ESP_OK;
+}

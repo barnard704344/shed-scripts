@@ -1,0 +1,2 @@
+source /home/rob/Documents/Github/shed-scripts/T500 Still/Flow Meter/build/gdbinit/symbols
+source /home/rob/Documents/Github/shed-scripts/T500 Still/Flow Meter/build/gdbinit/connect
